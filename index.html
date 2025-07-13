@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Smart Chessboard UI</title>
+  <style>
+    body {
+      font-family: Arial;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    #board {
+      display: grid;
+      grid-template-columns: repeat(8, 60px);
+      grid-template-rows: repeat(8, 60px);
+      margin: 20px;
+    }
+    .square {
+      width: 60px;
+      height: 60px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 32px;
+    }
+    .white { background-color: #f0d9b5; }
+    .black { background-color: #b58863; }
+    #log {
+      max-height: 300px;
+      overflow-y: auto;
+      width: 480px;
+      border: 1px solid #ccc;
+      padding: 10px;
+      background: #f9f9f9;
+      text-align: left;
+    }
+
+.piece-highlight {
+  color: #c44; /* Soft red */
+  font-size: 40px;
+  text-shadow: 0 0 4px rgba(255, 100, 100, 0.6);
+  animation: pop 0.3s ease;
+}
+
+@keyframes pop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.6); }
+  100% { transform: scale(1); }
+}
+
+.square.last-move.white {
+  background-color: #f7ec8b !important; /* Soft yellow for light squares */
+}
+
+.square.last-move.black {
+  background-color: #d6c34a !important; /* Slightly darker yellow for dark squares */
+}
+}
+
+  </style>
+</head>
+<body>
+  <h2>---CHESSY---</h2>
+<div id="gameIDDisplay" style="margin-top: 10px; font-weight: bold; font-size: 18px; color: #444;"></div>
+
+<!-- Timer display for White and Black players -->
+<div id="timers" style="display: flex; justify-content: space-between; width: 480px; margin-bottom: 10px;">
+  <div id="whiteTimer" style="font-size: 20px; font-weight: bold;">White: 05:00</div>
+  <div id="blackTimer" style="font-size: 20px; font-weight: bold;">Black: 05:00</div>
+</div>
+
+  <div id="board"></div>
+  <div id="alertBox" style="display:none; color: red; margin: 10px; font-weight: bold;"></div>
+  <h3>Move History</h3>
+  <div id="log"></div>
+
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+
+  <!-- Chess.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"></script>
+
+  <script>
+
+// Initial time for each player in seconds (5 minutes = 300 seconds)
+let whiteTime = 300;
+let blackTime = 300;
+
+// Will store the timestamp (in milliseconds) of the last completed move (piece placed)
+let lastMoveTimestamp = null;
+
+// Indicates which player's clock is currently active ('w' or 'b')
+let timerActiveColor = 'w';
+
+let clockInterval = null;
+let currentPlayer = 'w'; // whose clock is running
+
+function startLiveClock(player) {
+  clearInterval(clockInterval); // stop previous clock if any
+
+  currentPlayer = player;
+  clockInterval = setInterval(() => {
+    if (player === 'w') {
+      whiteTime--;
+      if (whiteTime <= 0) {
+        whiteTime = 0;
+        clearInterval(clockInterval);
+        showMessage("⏱️ White's time is up!");
+      }
+    } else {
+      blackTime--;
+      if (blackTime <= 0) {
+        blackTime = 0;
+        clearInterval(clockInterval);
+        showMessage("⏱️ Black's time is up!");
+      }
+    }
+    updateClockDisplay();
+  }, 1000);
+}
+
+
+/**
+ * Format seconds into MM:SS string for display.
+ * Example: 65 seconds => "01:05"
+ */
+function formatTime(sec) {
+  const m = String(Math.floor(sec / 60)).padStart(2, '0');
+  const s = String(sec % 60).padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+/**
+ * Update the HTML elements that display the timers
+ * with the latest whiteTime and blackTime values.
+ */
+function updateClockDisplay() {
+  document.getElementById("whiteTimer").innerText = `White: ${formatTime(whiteTime)}`;
+  document.getElementById("blackTimer").innerText = `Black: ${formatTime(blackTime)}`;
+}
+
+/**
+ * Check if any player's clock reached zero,
+ * if yes, show a timeout message and optionally
+ * disable further moves or interaction.
+ */
+function checkTimeout() {
+  if (whiteTime <= 0) {
+    showMessage("⏱️ White's time is up! Game over.");
+    // TODO: You can disable moves here if needed
+  } else if (blackTime <= 0) {
+    showMessage("⏱️ Black's time is up! Game over.");
+    // TODO: You can disable moves here if needed
+  }
+}
+
+
+function showMessage(message) {
+  const alertBox = document.getElementById("alertBox");
+  alertBox.textContent = message;
+  alertBox.style.display = "block";
+}
+
+function hideIllegalMove() {
+  const alertBox = document.getElementById("alertBox");
+  alertBox.style.display = "none";
+}
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBrxKZwb6MX7PEirBb0HCXnGRqTNHRcFLU",
+      databaseURL: "https://count-blinks-default-rtdb.firebaseio.com/"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    const boardEl = document.getElementById('board');
+    const logEl = document.getElementById('log');
+    let game = new Chess();
+
+    const pieceSymbols = {
+      R: "♖", N: "♘", B: "♗", Q: "♕", K: "♔", P: "♙",
+      r: "♜", n: "♞", b: "♝", q: "♛", k: "♚", p: "♟"
+    };
+
+    const squares = [];
+    const ranks = [8,7,6,5,4,3,2,1];
+    const files = ['a','b','c','d','e','f','g','h'];
+
+    function createBoard() {
+      for (let r = 0; r < 8; r++) {
+        for (let f = 0; f < 8; f++) {
+          const square = document.createElement('div');
+          const isWhite = (r + f) % 2 === 0;
+          square.className = `square ${isWhite ? 'white' : 'black'}`;
+          const pos = files[f] + ranks[r];
+          square.id = pos;
+          boardEl.appendChild(square);
+          squares.push(pos);
+        }
+      }
+    }
+
+    function updateBoard() {
+      const position = game.board();
+      for (let r = 0; r < 8; r++) {
+        for (let f = 0; f < 8; f++) {
+          const piece = position[r][f];
+          const square = document.getElementById(files[f] + ranks[r]);
+          square.textContent = piece ? pieceSymbols[piece.color === 'w' ? piece.type.toUpperCase() : piece.type] : '';
+        }
+      }
+    }
+
+function resetUIForNewGame() {
+  game.reset();                    
+  updateBoard();                   
+  logEl.innerHTML = "";           
+
+  if (prevFrom) document.getElementById(prevFrom).classList.remove("last-move");
+  if (prevTo) document.getElementById(prevTo).classList.remove("last-move");
+
+  prevFrom = null;
+  prevTo = null;
+  
+  lastFrom = null;
+  lastTo = null;
+
+  blocked = false;
+  blockedPiece = null;
+
+ // reset last move time for timer
+lastMoveTimestamp = null; 
+
+  whiteTime = 300;        // reset white timer to 5 minutes
+  blackTime = 300;        // reset black timer to 5 minutes
+  updateClockDisplay();   // update timers on UI
+clearInterval(clockInterval); // stop any ticking
+startLiveClock('w'); // white always starts
+
+  hideIllegalMove();
+
+  // Clear all .piece-highlight squares
+  document.querySelectorAll('.piece-highlight').forEach(el => {
+    el.classList.remove('piece-highlight');
+  });
+
+}
+
+
+    let lastFrom = null;
+    let blocked = false;
+    let blockedPiece = null;
+    let prevFrom = null;
+    let prevTo = null;
+
+    function applyMove(from, to) {
+  if (blocked) return;
+
+  if (!from || !to) {
+    console.warn("❌ Invalid move: from or to is null");
+    return;
+  }
+
+  const piece = game.get(from);
+  const move = game.move({ from, to, promotion: 'q' });
+
+  if (move) {
+    console.log(`✅ Applied move: ${from} → ${to}`);
+
+    // Remove previous highlights
+    if (prevFrom) {
+      const pf = document.getElementById(prevFrom);
+      if (pf) pf.classList.remove("last-move");
+    }
+    if (prevTo) {
+      const pt = document.getElementById(prevTo);
+      if (pt) pt.classList.remove("last-move");
+    }
+
+    const fromEl = document.getElementById(from);
+    const toEl = document.getElementById(to);
+    if (fromEl) fromEl.classList.add("last-move");
+    if (toEl) toEl.classList.add("last-move");
+
+    prevFrom = from;
+    prevTo = to;
+
+    updateBoard();
+
+    // Update log
+    const moves = game.history({ verbose: true });
+    logEl.innerHTML = '';
+    for (let i = 0; i < moves.length; i += 2) {
+      const w = moves[i]?.san || '';
+      const b = moves[i + 1]?.san || '';
+      logEl.innerHTML += `<div>${(i / 2 + 1)}. ${w} ${b}</div>`;
+    }
+    logEl.scrollTop = logEl.scrollHeight;
+
+  } else {
+    console.warn(`🚫 Illegal move: ${from} → ${to}`);
+    blocked = true;
+    blockedPiece = piece;
+
+    let reason = "Illegal move";
+    if (piece && piece.color !== game.turn()) {
+      reason = `It's ${game.turn() === 'w' ? 'White' : 'Black'}'s turn!`;
+    }
+
+    const typeMap = { p: "Pawn", r: "Rook", n: "Knight", b: "Bishop", q: "Queen", k: "King" };
+    const name = piece ? typeMap[piece.type] || "Piece" : "Piece";
+
+    showMessage(`🚫 ${reason}: Put ${name} back to ${from}.`);
+  }
+}
+
+
+ let currentListener = null;
+
+function listenToChanges() {
+  db.ref(`/chess/current_game`).on("value", snapshot => {
+    const game_ID = snapshot.val();
+    if (!game_ID) {
+      console.error("❌ No current game ID found!");
+      return;
+    }
+
+    console.log("🎲 Switched to Game ID:", game_ID);
+    document.getElementById("gameIDDisplay").innerText = `Game ID: ${game_ID}`;
+
+    resetUIForNewGame();
+
+    // Remove old listener
+    if (currentListener) {
+      currentListener.off();
+      console.log("🔌 Previous listener detached.");
+    }
+
+    const moveRef = db.ref(`/chess/${game_ID}/moves`);
+    currentListener = moveRef;
+
+    moveRef.on("child_added", snap => {
+      const val = snap.val();
+      console.log("📥 Got move:", val);
+
+      const [squareState, timestamp] = val.split(":");
+      const square = squareState.slice(0, 2);
+      const state = squareState[2]; // '0' or '1'
+
+      console.log(`🧩 Move detected: ${square} is now ${state === '0' ? 'empty' : 'occupied'}`);
+      console.log("LastFrom:", lastFrom, "LastTo:", lastTo);
+
+      // Handle illegal move recovery
+      if (blocked) {
+        if (state === '0' && square === lastTo) {
+          const typeMap = { p: "Pawn", r: "Rook", n: "Knight", b: "Bishop", q: "Queen", k: "King" };
+          const name = blockedPiece ? typeMap[blockedPiece.type] || "Piece" : "Piece";
+          console.log(`${name} lifted from wrong square`);
+          showMessage(`${name} lifted from ${lastTo}`);
+        } else if (state === '1' && square === lastFrom) {
+          console.log("✅ Piece put back to original square.");
+          hideIllegalMove();
+          blocked = false;
+          lastFrom = null;
+          lastTo = null;
+          blockedPiece = null;
+        }
+        return;
+      }
+
+      // Handle legal move
+      if (state === '0') {
+        lastFrom = square;
+        const el = document.getElementById(square);
+        if (el) el.classList.add("piece-highlight");
+      } else if (state === '1' && lastFrom) {
+        lastTo = square;
+
+
+    // Calculate elapsed time only if this is not the first move
+    if (lastMoveTimestamp !== null) {
+      // Calculate difference in milliseconds between current and last move timestamps
+      const elapsedMs = timestamp - lastMoveTimestamp;
+
+      // Convert milliseconds to whole seconds (discard partial seconds)
+      const elapsedSec = Math.floor(elapsedMs / 1000);
+
+      // Determine who just moved — it's the player whose turn was before this move
+      // Since 'game.turn()' gives the current turn after the move, invert it to get the mover
+      const playerMoved = game.turn() === 'w' ? 'b' : 'w';
+
+      // Subtract elapsed time from the correct player's clock
+      if (playerMoved === 'w') {
+        whiteTime -= elapsedSec;
+        if (whiteTime < 0) whiteTime = 0; // don't go negative
+      } else {
+        blackTime -= elapsedSec;
+        if (blackTime < 0) blackTime = 0;
+      }
+
+      // Update timer display on UI
+      updateClockDisplay();
+
+      // Check if any player's time reached zero
+      checkTimeout();
+    }
+
+    // Update the last move timestamp to the current one for next calculation
+    lastMoveTimestamp = timestamp;
+
+
+        applyMove(lastFrom, lastTo);
+        const el = document.getElementById(lastFrom);
+        if (el) el.classList.remove("piece-highlight");
+
+  	// Start ticking for the current player's turn
+  	startLiveClock(game.turn());
+      }
+    });
+ // 🔁 Track this listener so we can detach it next time
+    currentListener = moveRef; 
+  });
+}
+
+
+    // Init
+    createBoard();
+    updateBoard();
+    listenToChanges();
+  </script>
+</body>
+</html>
